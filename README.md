@@ -127,6 +127,34 @@ gamescope-idle wake      # wake now
 gamescope-idle status    # active | dim | black
 ```
 
+## Debugging — "why won't it blank?"
+
+The daemon logs to the journal (`journalctl --user -u gamescope-idle -f`). At the
+default `info` level you see the `dimming` / `blanking` / `awake` transitions. To
+find out **which device or app is keeping the screen awake**, enable debug logging:
+
+```sh
+systemctl --user edit gamescope-idle
+# add:
+#   [Service]
+#   Environment=RUST_LOG=gamescope_idle=debug
+systemctl --user restart gamescope-idle
+journalctl --user -u gamescope-idle -f
+```
+
+You'll then get lines like:
+
+```
+activity from event26 (Microsoft X-Box 360 pad 0): type=KEY code=304 value=1
+idle inhibited by gamescope-idle (pid 175803): movie night
+```
+
+The first names the input device and event that reset the idle timer (throttled to
+one line per device per second); the second names the app holding an idle
+inhibitor. Run the daemon by hand with `RUST_LOG=gamescope_idle=debug gamescope-idle daemon`
+for the same output on stderr. If a device shows up as unexpected activity, add its
+`eventN` node to `ignore_devices` in the config.
+
 ## HDMI-CEC (OLED TVs)
 
 With a CEC-capable adapter (e.g. a DisplayPort/HDMI adapter that exposes

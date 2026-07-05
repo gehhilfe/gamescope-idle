@@ -22,6 +22,9 @@ trait Login1Manager {
     #[zbus(property)]
     fn block_inhibited(&self) -> zbus::Result<String>;
 
+    /// List active inhibitors as (what, who, why, mode, uid, pid).
+    fn list_inhibitors(&self) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>>;
+
     /// Take an inhibitor lock; the returned fd holds it until closed.
     fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<OwnedFd>;
 }
@@ -49,6 +52,24 @@ impl InhibitWatch {
             Err(e) => {
                 tracing::warn!("could not read BlockInhibited: {e}");
                 false
+            }
+        }
+    }
+
+    /// Human-readable descriptions of who currently holds an idle block-inhibitor.
+    /// Used for debug logging ("why isn't it blanking?").
+    pub async fn idle_inhibitors(&self) -> Vec<String> {
+        match self.proxy.list_inhibitors().await {
+            Ok(list) => list
+                .into_iter()
+                .filter(|(what, _, _, mode, _, _)| {
+                    mode == "block" && what.split(':').any(|w| w == "idle")
+                })
+                .map(|(_, who, why, _, _, pid)| format!("{who} (pid {pid}): {why}"))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("could not list inhibitors: {e}");
+                Vec::new()
             }
         }
     }

@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use evdev::{Device, EventType};
 use tokio::sync::mpsc;
@@ -21,6 +21,9 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Minimum gap between per-device activity debug lines (avoids flooding).
+const LOG_THROTTLE: Duration = Duration::from_secs(1);
 
 /// Device *names* never treated as user input. "Video Bus" emits key events on
 /// display/DPMS changes — including ones our own blanking can cause — which
@@ -96,6 +99,13 @@ async fn watch_device(dev: Device, path: PathBuf, tx: mpsc::Sender<()>) {
     let thresholds = abs_thresholds(&dev);
     let mut last_abs: HashMap<u16, i32> = HashMap::new();
 
+    let base = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let name = dev.name().unwrap_or("unnamed").trim().to_string();
+
     let mut stream = match dev.into_event_stream() {
         Ok(s) => s,
         Err(e) => {
@@ -104,16 +114,33 @@ async fn watch_device(dev: Device, path: PathBuf, tx: mpsc::Sender<()>) {
         }
     };
 
+    // Per-device throttle so RUST_LOG=debug doesn't flood the journal during play.
+    let mut last_log: Option<Instant> = None;
+
     loop {
         match stream.next_event().await {
             Ok(ev) => {
                 if is_activity(&ev, &thresholds, &mut last_abs) {
                     // Best-effort: if the channel is full, activity is already signalled.
                     let _ = tx.try_send(());
+
+                    // Debug: name the device/event keeping the screen awake.
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let now = Instant::now();
+                        if last_log.is_none_or(|t| now.duration_since(t) >= LOG_THROTTLE) {
+                            last_log = Some(now);
+                            tracing::debug!(
+                                "activity from {base} ({name}): type={:?} code={} value={}",
+                                ev.event_type(),
+                                ev.code(),
+                                ev.value()
+                            );
+                        }
+                    }
                 }
             }
             Err(e) => {
-                tracing::debug!("{} ended: {e}", path.display());
+                tracing::debug!("{base} ended: {e}");
                 break;
             }
         }

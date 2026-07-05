@@ -12,6 +12,10 @@ Type=simple
 # The gamescope session writes its environment (incl. the Wayland socket) here.
 EnvironmentFile=-%t/gamescope-environment
 Environment=WAYLAND_DISPLAY=gamescope-0
+# To debug why the screen won't blank (which device/inhibitor keeps it awake):
+#   systemctl --user edit gamescope-idle
+# and add:  [Service]\n Environment=RUST_LOG=gamescope_idle=debug
+# then:  systemctl --user restart gamescope-idle  and  journalctl --user -u gamescope-idle -f
 ExecStart=/usr/bin/gamescope-idle daemon
 Restart=on-failure
 RestartSec=2

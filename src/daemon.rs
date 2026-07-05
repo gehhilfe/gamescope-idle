@@ -152,7 +152,17 @@ impl Machine {
                 };
                 if blocked {
                     // Something holds an idle inhibitor; defer a full cycle.
-                    tracing::debug!("idle inhibited; staying awake");
+                    if tracing::enabled!(tracing::Level::DEBUG) {
+                        let holders = match inhibit {
+                            Some(w) => w.idle_inhibitors().await,
+                            None => Vec::new(),
+                        };
+                        if holders.is_empty() {
+                            tracing::debug!("idle inhibited; staying awake");
+                        } else {
+                            tracing::debug!("idle inhibited by {}", holders.join("; "));
+                        }
+                    }
                     self.last_activity = Instant::now();
                     return;
                 }
