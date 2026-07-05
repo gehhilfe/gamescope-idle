@@ -5,19 +5,14 @@
 //! the controller directly over hidraw and emits *no* evdev events — so evdev
 //! can't tell whether you're navigating menus with the pad.
 //!
-//! The raw report is dominated by a packet counter and the IMU (gyro/accel),
-//! which churn constantly even when the controller is perfectly still. Worse,
-//! empirically the button/stick/trackpad state is *not* cleanly diff-able from
-//! this report — it's buried at a change rate indistinguishable from the counter
-//! noise. What *is* reliable is **motion**: a handful of orientation/gyro bytes
-//! read exactly zero while the controller sits still and light up the instant it
-//! is handled. That's the signal we use — and it's the right proxy for the
-//! launcher: while you navigate you're holding the pad (hand tremor/tilt →
-//! motion → awake); set it down and it goes still → the screen blanks. Those
-//! bytes are silent at rest, so a resting controller produces zero false activity.
-//!
-//! The byte offsets are per-controller-model; the profile below was measured
-//! empirically (30s at rest, still vs. handled).
+//! The raw report is dominated by a packet counter and the IMU (gyro/accel), so
+//! naive byte-diffing is hopeless. Instead we parse the actual report: the Steam
+//! Controller "Triton" (28de:1304) layout is documented in SDL PR #15528 — report
+//! id `0x42`, then a seq counter, then a u32 button bitmask, then analog axes and
+//! IMU. We read the button field and wake on changes to the *digital* buttons,
+//! masking out the capacitive touch/grip bits that flicker from merely holding
+//! the pad. So a resting (or just-held) controller stays idle, and a real
+//! button/D-pad/click press wakes the screen.
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -38,28 +33,46 @@ const LOG_THROTTLE: Duration = Duration::from_secs(1);
 struct Profile {
     name: &'static str,
     vendor: u16,
-    /// First byte of the input/status report we key on.
+    /// Report id (first byte) of the input-state report we parse.
     report_id: u8,
-    /// Minimum report length for the motion-byte offsets to be valid.
+    /// Minimum report length required to read the button field.
     min_len: usize,
-    /// Report byte offsets that read zero while the controller is still and
-    /// change when it is moved/handled (orientation + gyro). Everything else is
-    /// the packet counter or high-rate IMU noise that never goes quiet.
-    motion_bytes: &'static [usize],
+    /// Byte offset of the little-endian u32 button bitmask in the report.
+    buttons_offset: usize,
+    /// Bits of the button field that count as real digital buttons. Capacitive
+    /// touch/grip sensor bits (which flicker just from holding the pad) are
+    /// masked out so only genuine presses register.
+    button_mask: u32,
+    /// Byte offsets of the signed-i16 analog stick axes (little-endian).
+    stick_axes: &'static [usize],
+    /// A stick counts as activity when any axis is deflected past this magnitude
+    /// (center is 0). Filters out at-rest ADC jitter around center.
+    stick_deadzone: i32,
 }
 
-/// Valve Steam Controller, including the wireless "Puck" (up to 4 pads). Offsets
-/// measured on `Valve Software Steam Controller Puck` (28de:1304): bytes 8, 18–29
-/// and 35/37/39 had 0 changes over 30s while still and lit up when the pad was
-/// handled, while the counter (byte 1) and IMU (10–16, 30–45) churn continuously.
+// Capacitive touch/grip bits in the Triton button field (SDL PR #15528). These
+// toggle from merely holding the controller, so they are excluded.
+const TRITON_CAPACITIVE: u32 = 0x0010_0000   // right joystick touch
+    | 0x0020_0000  // right touchpad touch
+    | 0x0100_0000  // left joystick touch
+    | 0x0200_0000  // left touchpad touch
+    | 0x1000_0000  // right grip touch
+    | 0x2000_0000; // left grip touch
+
+/// Valve Steam Controller "Triton" (28de:1304, incl. the wireless "Puck"). Report
+/// layout from SDL PR #15528: byte 0 = report id `0x42`, byte 1 = seq_num, bytes
+/// 2..6 = u32 `buttons` (LE), then triggers/sticks/trackpads, then IMU at 30+. We
+/// wake on changes to the digital buttons only (capacitive bits masked out).
 const VALVE_STEAM: Profile = Profile {
     name: "Valve Steam Controller",
     vendor: 0x28DE,
     report_id: 0x42,
-    min_len: 40,
-    motion_bytes: &[
-        8, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 35, 37, 39,
-    ],
+    min_len: 18, // through the stick axes (bytes 10..18)
+    buttons_offset: 2,
+    button_mask: !TRITON_CAPACITIVE,
+    // Left X/Y, Right X/Y as i16 at bytes 10, 12, 14, 16.
+    stick_axes: &[10, 12, 14, 16],
+    stick_deadzone: 8000, // ~25% of i16 range
 };
 
 const PROFILES: &[&Profile] = &[&VALVE_STEAM];
@@ -175,23 +188,42 @@ async fn read_loop(
             continue;
         }
 
-        if !prev.is_empty() {
-            let moved = profile
-                .motion_bytes
-                .iter()
-                .any(|&i| i < report.len() && i < prev.len() && report[i] != prev[i]);
-            if moved {
-                let _ = tx.try_send(());
-                if tracing::enabled!(tracing::Level::DEBUG) {
-                    let now = Instant::now();
-                    if last_log.is_none_or(|t| now.duration_since(t) >= LOG_THROTTLE) {
-                        last_log = Some(now);
-                        tracing::debug!("motion from {base} ({})", profile.name);
-                    }
+        // A digital button changed since the last report...
+        let button_changed =
+            !prev.is_empty() && masked_buttons(report, profile) != masked_buttons(&prev, profile);
+        // ...or a stick is pushed past the deadzone.
+        let stick_active = stick_deflected(report, profile);
+
+        if button_changed || stick_active {
+            let _ = tx.try_send(());
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let now = Instant::now();
+                if last_log.is_none_or(|t| now.duration_since(t) >= LOG_THROTTLE) {
+                    last_log = Some(now);
+                    let what = if button_changed { "button" } else { "stick" };
+                    tracing::debug!("{what} from {base} ({})", profile.name);
                 }
             }
         }
         prev.clear();
         prev.extend_from_slice(report);
     }
+}
+
+/// Read the digital-button bits from a report (capacitive bits masked out).
+fn masked_buttons(report: &[u8], profile: &Profile) -> Option<u32> {
+    let o = profile.buttons_offset;
+    let b = report.get(o..o + 4)?;
+    let raw = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+    Some(raw & profile.button_mask)
+}
+
+/// True if any analog stick axis is deflected past the deadzone.
+fn stick_deflected(report: &[u8], profile: &Profile) -> bool {
+    profile.stick_axes.iter().any(|&o| {
+        report
+            .get(o..o + 2)
+            .map(|b| (i16::from_le_bytes([b[0], b[1]]) as i32).abs() > profile.stick_deadzone)
+            .unwrap_or(false)
+    })
 }
