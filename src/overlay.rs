@@ -203,12 +203,6 @@ struct Overlay {
 impl Overlay {
     fn on_cmd(&mut self, cmd: OverlayCmd) {
         match cmd {
-            // "Hide" is just a fully-transparent redraw — we deliberately never
-            // destroy the surface while the daemon runs. Destroying it and then
-            // continuing to dispatch makes gamescope error the connection (an
-            // event arrives for the dead surface → broken pipe). Keeping one
-            // persistent, click-through surface and only changing its alpha is
-            // robust and avoids map/unmap churn.
             OverlayCmd::Show { alpha } => self.set_alpha(alpha),
             OverlayCmd::Quit => {
                 self.layer = None; // safe here: we stop dispatching immediately after
@@ -219,8 +213,17 @@ impl Overlay {
 
     fn set_alpha(&mut self, alpha: f64) {
         self.alpha = alpha.clamp(0.0, 1.0);
+        // We never destroy or unmap the surface once created. On gamescope
+        // (3.16.24) destroying a layer surface drops the whole Wayland
+        // connection and can restart the session, and an unmapped layer surface
+        // can't be re-mapped. So the surface is created lazily on the first
+        // dim/blank and thereafter "hidden" by drawing it fully transparent
+        // (alpha 0). It's created only if we actually need to show something, so
+        // a session that never idles never gets an overlay surface at all.
         if self.layer.is_none() {
-            self.create_layer();
+            if self.alpha > 0.0 {
+                self.create_layer();
+            }
         } else {
             self.draw();
         }
