@@ -1,0 +1,20 @@
+[Unit]
+Description=gamescope-idle — controller-aware idle blanking (Steam Gaming Mode)
+Documentation=https://github.com/gehhilfe/gamescope-idle
+# Tie the daemon's lifetime to the gamescope session: it starts when Gaming Mode
+# starts and stops when you switch to the KDE Plasma desktop (which does its own
+# idle handling). This is what scopes it to gamescope only.
+PartOf=gamescope-session.target
+After=gamescope-session.target
+
+[Service]
+Type=simple
+# The gamescope session writes its environment (incl. the Wayland socket) here.
+EnvironmentFile=-%t/gamescope-environment
+Environment=WAYLAND_DISPLAY=gamescope-0
+ExecStart=/usr/bin/gamescope-idle daemon
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=gamescope-session.target

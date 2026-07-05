@@ -1,0 +1,38 @@
+[package]
+name = "gamescope-idle"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Controller-aware idle blanking for gamescope — protects OLED panels from burn-in in Steam Gaming Mode"
+authors = ["The gamescope-idle Authors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/gehhilfe/gamescope-idle"
+readme = "README.md"
+keywords = ["gamescope", "steam", "idle", "oled", "wayland"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "gamescope-idle"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util", "process"] }
+evdev = { version = "0.13", features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "6"
+
+# Wayland overlay (wlr-layer-shell) — runs on its own thread with a calloop loop.
+smithay-client-toolkit = "0.20"
+wayland-client = "0.31"
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+
+[profile.release]
+strip = true
+lto = "thin"

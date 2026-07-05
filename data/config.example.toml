@@ -1,0 +1,26 @@
+# gamescope-idle configuration.
+# Copy to ~/.config/gamescope-idle/config.toml and edit. All keys are optional;
+# the values shown here are the built-in defaults.
+
+# Seconds with no keyboard/controller input before the screen starts blanking.
+idle_timeout = 300
+
+# Seconds spent dimmed as a warning before going fully black. Set to 0 to skip
+# the dim stage and go straight to black.
+dim_warning = 30
+
+# Alpha of the dim warning overlay, 0.0 (invisible) .. 1.0 (already black).
+dim_alpha = 0.5
+
+# HDMI-CEC handling:
+#   "auto" — use CEC standby/wake only if a /dev/cec* device is present (default)
+#   "on"   — always attempt CEC (logs an error if no adapter is found)
+#   "off"  — never touch CEC; use the black overlay only
+cec = "auto"
+
+# CEC device to use when CEC is active.
+cec_device = "/dev/cec0"
+
+# Input event-node basenames to never treat as activity, e.g. ["event0"].
+# "Video Bus" is always ignored by name (it emits on display/DPMS changes).
+ignore_devices = []
