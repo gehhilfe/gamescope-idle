@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use evdev::{Device, EventType};
@@ -33,11 +33,16 @@ const NAME_BLOCKLIST: &[&str] = &["Video Bus"];
 /// Spawn the input-watching machinery. Every burst of real activity sends `()`
 /// on `tx` (best-effort; the receiver only needs to know "something happened").
 pub fn spawn(cfg: Arc<Config>, tx: mpsc::Sender<()>) {
+    // Shared so each device task can remove its own path when it dies. This is
+    // essential: Steam's virtual pad is constantly destroyed and re-created at
+    // the *same* event node, and the node path still exists afterwards — so a
+    // path-existence check can't tell the old device from the new one. Letting
+    // the dead task drop its entry lets the next rescan re-attach the fresh one.
+    let watched: Arc<Mutex<HashSet<PathBuf>>> = Arc::new(Mutex::new(HashSet::new()));
     tokio::spawn(async move {
-        let mut watched: HashSet<PathBuf> = HashSet::new();
         loop {
             for (path, dev) in evdev::enumerate() {
-                if watched.contains(&path) {
+                if watched.lock().unwrap().contains(&path) {
                     continue;
                 }
                 let base = path
@@ -53,20 +58,13 @@ pub fn spawn(cfg: Arc<Config>, tx: mpsc::Sender<()>) {
                 }
                 let dev_name = dev.name().unwrap_or_default().trim().to_string();
                 if NAME_BLOCKLIST.iter().any(|b| dev_name.contains(b)) {
-                    watched.insert(path.clone()); // remember so we don't re-log/re-check it
+                    watched.lock().unwrap().insert(path.clone()); // don't re-log/re-check
                     continue;
                 }
-                tracing::info!(
-                    "watching {} ({})",
-                    base,
-                    dev.name().unwrap_or("unnamed").trim()
-                );
-                watched.insert(path.clone());
-                let tx = tx.clone();
-                tokio::spawn(watch_device(dev, path, tx));
+                tracing::info!("watching {base} ({dev_name})");
+                watched.lock().unwrap().insert(path.clone());
+                tokio::spawn(watch_device(dev, path, tx.clone(), watched.clone()));
             }
-            // Drop unplugged devices so a re-plug (same node) is picked up again.
-            watched.retain(|p| p.exists());
             tokio::time::sleep(RESCAN_INTERVAL).await;
         }
     });
@@ -95,7 +93,12 @@ fn abs_thresholds(dev: &Device) -> HashMap<u16, i32> {
     map
 }
 
-async fn watch_device(dev: Device, path: PathBuf, tx: mpsc::Sender<()>) {
+async fn watch_device(
+    dev: Device,
+    path: PathBuf,
+    tx: mpsc::Sender<()>,
+    watched: Arc<Mutex<HashSet<PathBuf>>>,
+) {
     let thresholds = abs_thresholds(&dev);
     let mut last_abs: HashMap<u16, i32> = HashMap::new();
 
@@ -109,7 +112,8 @@ async fn watch_device(dev: Device, path: PathBuf, tx: mpsc::Sender<()>) {
     let mut stream = match dev.into_event_stream() {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("cannot stream {}: {e}", path.display());
+            tracing::warn!("cannot stream {base}: {e}");
+            watched.lock().unwrap().remove(&path);
             return;
         }
     };
@@ -145,6 +149,10 @@ async fn watch_device(dev: Device, path: PathBuf, tx: mpsc::Sender<()>) {
             }
         }
     }
+
+    // Let the rescan re-attach if the node is reused (e.g. Steam re-creates the
+    // virtual pad at the same event number).
+    watched.lock().unwrap().remove(&path);
 }
 
 /// Decide whether an event represents genuine user activity.
