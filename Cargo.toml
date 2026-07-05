@@ -26,6 +26,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "6"
+libc = "0.2"
 
 # Wayland overlay (wlr-layer-shell) — runs on its own thread with a calloop loop.
 # default-features off drops the xkbcommon/seat-keyboard pieces we don't use

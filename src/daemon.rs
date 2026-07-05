@@ -18,6 +18,7 @@ use tokio::time::Instant;
 use crate::cec::Cec;
 use crate::config::Config;
 use crate::control::{socket_path, Command, State};
+use crate::hid;
 use crate::inhibit::InhibitWatch;
 use crate::input;
 use crate::overlay::{self, OverlayHandle};
@@ -54,9 +55,11 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     let cec = Cec::new(&cfg);
 
-    // Input activity.
+    // Input activity: evdev (keyboard + in-game controller) and hidraw (controller
+    // in the Steam launcher, where Steam emits no evdev events).
     let (act_tx, mut act_rx) = mpsc::channel::<()>(1);
-    input::spawn(cfg.clone(), act_tx);
+    input::spawn(cfg.clone(), act_tx.clone());
+    hid::spawn(cfg.clone(), act_tx);
 
     // Control socket.
     let sock = socket_path();

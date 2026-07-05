@@ -8,6 +8,7 @@ mod cec;
 mod config;
 mod control;
 mod daemon;
+mod hid;
 mod inhibit;
 mod input;
 mod overlay;

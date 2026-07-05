@@ -58,6 +58,21 @@ ACTIVE ──(no input for idle_timeout, and not inhibited)──▶ DIM ──(
   doesn't keep the screen awake — but D-pad, buttons and real stick pushes do.
 - While an **idle inhibitor** is held, it stays awake and never blanks.
 
+### Controllers: in-game vs. the Steam launcher
+
+In a **game**, Steam Input re-emits your controller as a virtual pad on evdev,
+which gamescope-idle reads directly (buttons, sticks, D-pad — all count).
+
+In the **Steam launcher / Big Picture UI**, Steam consumes the controller raw
+over hidraw and emits no evdev events, so there's nothing on evdev to see. For
+known controllers (currently the Valve Steam Controller / Puck) gamescope-idle
+reads the hidraw report and detects **motion** — the controller's orientation and
+gyro. Steam's raw report has no cleanly-decodable button byte, but motion is the
+right proxy: while you navigate you're holding the pad (so it stays awake), and
+when you set it down it goes still and the screen blanks. Disable with
+`watch_hidraw = false`. Other controllers in the launcher aren't detected yet;
+keyboard always is.
+
 ## Install
 
 ### Arch / CachyOS

@@ -426,6 +426,7 @@ dependencies = [
  "clap",
  "directories",
  "evdev",
+ "libc",
  "serde",
  "smithay-client-toolkit",
  "tokio",

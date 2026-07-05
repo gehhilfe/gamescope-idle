@@ -35,6 +35,9 @@ pub struct Config {
     /// Input device event-node basenames to ignore, e.g. `["event0", "event1"]`
     /// for the power button. Matched against the `/dev/input/eventN` basename.
     pub ignore_devices: Vec<String>,
+    /// Also watch known controllers over hidraw. Needed for the Steam launcher,
+    /// where Steam consumes the controller directly and emits no evdev events.
+    pub watch_hidraw: bool,
 }
 
 impl Default for Config {
@@ -46,6 +49,7 @@ impl Default for Config {
             cec: CecMode::Auto,
             cec_device: "/dev/cec0".to_string(),
             ignore_devices: Vec::new(),
+            watch_hidraw: true,
         }
     }
 }

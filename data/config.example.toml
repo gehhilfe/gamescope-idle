@@ -24,3 +24,8 @@ cec_device = "/dev/cec0"
 # Input event-node basenames to never treat as activity, e.g. ["event0"].
 # "Video Bus" is always ignored by name (it emits on display/DPMS changes).
 ignore_devices = []
+
+# Also watch known controllers over hidraw. Required to detect controller input
+# in the Steam launcher / Big Picture UI, where Steam consumes the controller
+# directly and emits no evdev events. In-game input uses evdev regardless.
+watch_hidraw = true
