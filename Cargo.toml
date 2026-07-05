@@ -28,7 +28,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 directories = "6"
 
 # Wayland overlay (wlr-layer-shell) — runs on its own thread with a calloop loop.
-smithay-client-toolkit = "0.20"
+# default-features off drops the xkbcommon/seat-keyboard pieces we don't use
+# (and their system dependency).
+smithay-client-toolkit = { version = "0.20", default-features = false }
 wayland-client = "0.31"
 calloop = "0.14"
 calloop-wayland-source = "0.4"
