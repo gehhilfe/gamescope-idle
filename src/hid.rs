@@ -57,7 +57,9 @@ const VALVE_STEAM: Profile = Profile {
     vendor: 0x28DE,
     report_id: 0x42,
     min_len: 40,
-    motion_bytes: &[8, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 35, 37, 39],
+    motion_bytes: &[
+        8, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 35, 37, 39,
+    ],
 };
 
 const PROFILES: &[&Profile] = &[&VALVE_STEAM];
@@ -115,9 +117,7 @@ fn profile_for(path: &std::path::Path) -> Option<&'static Profile> {
     let base = path.file_name()?.to_str()?;
     let uevent = std::fs::read_to_string(format!("/sys/class/hidraw/{base}/device/uevent")).ok()?;
     // HID_ID=<bus>:<vendor>:<product>, all hex, e.g. 0003:000028DE:00001304
-    let hid_id = uevent
-        .lines()
-        .find_map(|l| l.strip_prefix("HID_ID="))?;
+    let hid_id = uevent.lines().find_map(|l| l.strip_prefix("HID_ID="))?;
     let vendor_hex = hid_id.split(':').nth(1)?;
     let vendor = u32::from_str_radix(vendor_hex.trim(), 16).ok()? as u16;
     PROFILES.iter().copied().find(|p| p.vendor == vendor)
