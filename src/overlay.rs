@@ -57,10 +57,33 @@ struct Shared {
     quit: AtomicBool,
 }
 
+/// Backend-agnostic control surface for the daemon: show the overlay at an
+/// alpha (0 = transparent .. 1 = opaque black), hide it, or tear it down.
+pub trait OverlayControl: Send {
+    fn show(&self, alpha: f64);
+    fn hide(&self);
+    fn quit(&self);
+}
+
 /// Handle to the overlay thread. Cloneable.
 #[derive(Clone)]
 pub struct OverlayHandle {
     shared: Arc<Shared>,
+}
+
+impl OverlayControl for OverlayHandle {
+    fn show(&self, alpha: f64) {
+        self.set(alpha);
+    }
+    fn hide(&self) {
+        self.set(0.0);
+    }
+    fn quit(&self) {
+        self.shared.quit.store(true, Ordering::SeqCst);
+        if let Some(tx) = self.shared.sender.lock().unwrap().as_ref() {
+            let _ = tx.send(OverlayCmd::Quit);
+        }
+    }
 }
 
 impl OverlayHandle {
@@ -69,18 +92,6 @@ impl OverlayHandle {
         *self.shared.alpha.lock().unwrap() = alpha;
         if let Some(tx) = self.shared.sender.lock().unwrap().as_ref() {
             let _ = tx.send(OverlayCmd::Show { alpha });
-        }
-    }
-    pub fn show(&self, alpha: f64) {
-        self.set(alpha);
-    }
-    pub fn hide(&self) {
-        self.set(0.0);
-    }
-    pub fn quit(&self) {
-        self.shared.quit.store(true, Ordering::SeqCst);
-        if let Some(tx) = self.shared.sender.lock().unwrap().as_ref() {
-            let _ = tx.send(OverlayCmd::Quit);
         }
     }
 }

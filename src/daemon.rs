@@ -21,7 +21,8 @@ use crate::control::{socket_path, Command, State};
 use crate::hid;
 use crate::inhibit::InhibitWatch;
 use crate::input;
-use crate::overlay::{self, OverlayHandle};
+use crate::overlay::{self, OverlayControl};
+use crate::overlay_x11;
 
 /// Far-future sleep used to mean "no timer in this state".
 const IDLE_FOREVER: Duration = Duration::from_secs(3600);
@@ -35,13 +36,30 @@ pub async fn run(cfg: Config) -> Result<()> {
         cfg.dim_alpha
     );
 
-    // Overlay is the primary blanking mechanism; if it can't reach the compositor
-    // we still run (CEC-only) rather than dying.
-    let overlay: Option<OverlayHandle> = match overlay::spawn() {
-        Ok(h) => Some(h),
-        Err(e) => {
-            tracing::error!("overlay unavailable, running without it: {e:#}");
-            None
+    // Overlay is the primary blanking mechanism; if it can't start we still run
+    // (CEC-only) rather than dying. The backend is selectable.
+    let overlay: Option<Box<dyn OverlayControl>> = match cfg.overlay_backend.as_str() {
+        "external-overlay" => match overlay_x11::spawn() {
+            Ok(h) => {
+                tracing::info!("overlay backend: external-overlay (Xwayland)");
+                Some(Box::new(h))
+            }
+            Err(e) => {
+                tracing::error!("external overlay unavailable, running without it: {e:#}");
+                None
+            }
+        },
+        other => {
+            if other != "layer-shell" {
+                tracing::warn!("unknown overlay_backend {other:?}, using layer-shell");
+            }
+            match overlay::spawn() {
+                Ok(h) => Some(Box::new(h)),
+                Err(e) => {
+                    tracing::error!("overlay unavailable, running without it: {e:#}");
+                    None
+                }
+            }
         }
     };
 
@@ -115,7 +133,7 @@ pub async fn run(cfg: Config) -> Result<()> {
 
 struct Machine {
     cfg: Arc<Config>,
-    overlay: Option<OverlayHandle>,
+    overlay: Option<Box<dyn OverlayControl>>,
     cec: Cec,
     state: State,
     last_activity: Instant,

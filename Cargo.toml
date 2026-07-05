@@ -36,6 +36,9 @@ wayland-client = "0.31"
 calloop = "0.14"
 calloop-wayland-source = "0.4"
 
+# Alternative overlay backend: GAMESCOPE_EXTERNAL_OVERLAY via Xwayland (like mangoapp).
+x11rb = { version = "0.13", features = ["shape"] }
+
 [profile.release]
 strip = true
 lto = "thin"

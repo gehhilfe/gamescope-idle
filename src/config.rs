@@ -38,6 +38,10 @@ pub struct Config {
     /// Also watch known controllers over hidraw. Needed for the Steam launcher,
     /// where Steam consumes the controller directly and emits no evdev events.
     pub watch_hidraw: bool,
+    /// Overlay backend: "layer-shell" (default) or "external-overlay" (an
+    /// Xwayland window flagged with GAMESCOPE_EXTERNAL_OVERLAY, like mangoapp —
+    /// can be mapped/unmapped freely so it never touches a running game).
+    pub overlay_backend: String,
 }
 
 impl Default for Config {
@@ -50,6 +54,7 @@ impl Default for Config {
             cec_device: "/dev/cec0".to_string(),
             ignore_devices: Vec::new(),
             watch_hidraw: true,
+            overlay_backend: "layer-shell".to_string(),
         }
     }
 }

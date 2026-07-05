@@ -29,3 +29,12 @@ ignore_devices = []
 # in the Steam launcher / Big Picture UI, where Steam consumes the controller
 # directly and emits no evdev events. In-game input uses evdev regardless.
 watch_hidraw = true
+
+# Overlay backend:
+#   "layer-shell"      — wlr-layer-shell surface (default). Stable, but gamescope
+#                        won't let it be destroyed/unmapped, so once created it
+#                        persists (transparent) and may block direct scan-out.
+#   "external-overlay" — an Xwayland window flagged GAMESCOPE_EXTERNAL_OVERLAY,
+#                        like mangoapp. Can be mapped/unmapped freely, so it's
+#                        fully removed during games. (Experimental.)
+overlay_backend = "layer-shell"

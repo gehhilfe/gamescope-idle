@@ -12,6 +12,7 @@ mod hid;
 mod inhibit;
 mod input;
 mod overlay;
+mod overlay_x11;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -88,6 +89,7 @@ async fn main() -> Result<()> {
             std::process::exit(code);
         }
         Cmd::OverlayTest { alpha, seconds } => {
+            use overlay::OverlayControl;
             let handle = overlay::spawn()?;
             handle.show(alpha);
             tracing::info!("overlay shown at alpha={alpha} for {seconds}s");
