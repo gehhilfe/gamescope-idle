@@ -9,6 +9,8 @@
 //! Wayland state is confined to a dedicated thread with its own `calloop` loop;
 //! the daemon drives it with [`OverlayCmd`] messages over a `calloop` channel.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -36,55 +38,102 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 
-/// Commands the daemon sends to the overlay thread.
+/// Commands the daemon sends to the overlay thread over a per-connection channel.
 #[derive(Debug, Clone, Copy)]
-pub enum OverlayCmd {
+enum OverlayCmd {
     /// Show (or update) the overlay at the given alpha (0.0 transparent .. 1.0 black).
     Show { alpha: f64 },
-    /// Remove the overlay entirely.
-    Hide,
     /// Tear down the thread.
     Quit,
 }
 
-/// Handle to the overlay thread. Cloneable senders are cheap.
+/// Shared between the [`OverlayHandle`] and the overlay thread. `alpha` is the
+/// *desired* overlay opacity and is the source of truth across reconnects: the
+/// handle updates it even while disconnected, so when the thread reconnects
+/// (e.g. after gamescope restarts) it restores the correct state.
+struct Shared {
+    sender: Mutex<Option<calloop::channel::Sender<OverlayCmd>>>,
+    alpha: Mutex<f64>,
+    quit: AtomicBool,
+}
+
+/// Handle to the overlay thread. Cloneable.
 #[derive(Clone)]
 pub struct OverlayHandle {
-    tx: calloop::channel::Sender<OverlayCmd>,
+    shared: Arc<Shared>,
 }
 
 impl OverlayHandle {
+    fn set(&self, alpha: f64) {
+        let alpha = alpha.clamp(0.0, 1.0);
+        *self.shared.alpha.lock().unwrap() = alpha;
+        if let Some(tx) = self.shared.sender.lock().unwrap().as_ref() {
+            let _ = tx.send(OverlayCmd::Show { alpha });
+        }
+    }
     pub fn show(&self, alpha: f64) {
-        let _ = self.tx.send(OverlayCmd::Show { alpha });
+        self.set(alpha);
     }
     pub fn hide(&self) {
-        let _ = self.tx.send(OverlayCmd::Hide);
+        self.set(0.0);
     }
     pub fn quit(&self) {
-        let _ = self.tx.send(OverlayCmd::Quit);
+        self.shared.quit.store(true, Ordering::SeqCst);
+        if let Some(tx) = self.shared.sender.lock().unwrap().as_ref() {
+            let _ = tx.send(OverlayCmd::Quit);
+        }
     }
 }
 
-/// Start the overlay thread and return a handle to control it.
+/// Start the overlay thread and return a handle to control it. The thread keeps
+/// (re)connecting to the compositor on its own, so this never fails.
 pub fn spawn() -> Result<OverlayHandle> {
-    let (tx, rx) = calloop::channel::channel::<OverlayCmd>();
-    // Confirm we can reach the compositor before returning, so callers get an early error.
-    let conn = Connection::connect_to_env()
-        .context("connecting to the Wayland compositor (is WAYLAND_DISPLAY=gamescope-0 set?)")?;
-
+    let shared = Arc::new(Shared {
+        sender: Mutex::new(None),
+        alpha: Mutex::new(0.0),
+        quit: AtomicBool::new(false),
+    });
+    let thread_shared = shared.clone();
     thread::Builder::new()
         .name("gi-overlay".into())
-        .spawn(move || {
-            if let Err(e) = run(conn, rx) {
-                tracing::error!("overlay thread exited: {e:#}");
-            }
-        })
+        .spawn(move || overlay_thread(thread_shared))
         .context("spawning overlay thread")?;
-
-    Ok(OverlayHandle { tx })
+    Ok(OverlayHandle { shared })
 }
 
-fn run(conn: Connection, rx: calloop::channel::Channel<OverlayCmd>) -> Result<()> {
+/// Reconnect loop: survive gamescope restarts by rebuilding the whole Wayland
+/// connection and restoring the desired overlay state.
+fn overlay_thread(shared: Arc<Shared>) {
+    let mut backoff = Duration::from_millis(200);
+    while !shared.quit.load(Ordering::SeqCst) {
+        match Connection::connect_to_env() {
+            Ok(conn) => {
+                let (tx, rx) = calloop::channel::channel::<OverlayCmd>();
+                *shared.sender.lock().unwrap() = Some(tx);
+                let result = run(conn, rx, &shared);
+                *shared.sender.lock().unwrap() = None;
+                backoff = Duration::from_millis(200);
+                match result {
+                    Ok(()) => {} // clean exit (Quit)
+                    Err(e) if !shared.quit.load(Ordering::SeqCst) => {
+                        tracing::warn!("overlay connection lost ({e:#}); reconnecting");
+                    }
+                    Err(_) => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!("overlay cannot reach compositor ({e:#}); retrying");
+            }
+        }
+        if shared.quit.load(Ordering::SeqCst) {
+            break;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(Duration::from_secs(3));
+    }
+}
+
+fn run(conn: Connection, rx: calloop::channel::Channel<OverlayCmd>, shared: &Shared) -> Result<()> {
     let (globals, event_queue) = registry_queue_init(&conn).context("registry init")?;
     let qh: QueueHandle<Overlay> = event_queue.handle();
 
@@ -119,9 +168,13 @@ fn run(conn: Connection, rx: calloop::channel::Channel<OverlayCmd>) -> Result<()
         input_region: None,
         size: (0, 0),
         output_size: None,
-        alpha: 0.0,
+        // Restore the desired opacity after a reconnect.
+        alpha: *shared.alpha.lock().unwrap(),
         exit: false,
     };
+    if state.alpha > 0.0 {
+        state.create_layer();
+    }
 
     while !state.exit {
         event_loop
@@ -157,7 +210,6 @@ impl Overlay {
             // persistent, click-through surface and only changing its alpha is
             // robust and avoids map/unmap churn.
             OverlayCmd::Show { alpha } => self.set_alpha(alpha),
-            OverlayCmd::Hide => self.set_alpha(0.0),
             OverlayCmd::Quit => {
                 self.layer = None; // safe here: we stop dispatching immediately after
                 self.exit = true;
