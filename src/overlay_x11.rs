@@ -2,12 +2,14 @@
 //! with the `GAMESCOPE_EXTERNAL_OVERLAY` atom — the same mechanism mangoapp uses
 //! to draw on top of games.
 //!
-//! Unlike a `wlr-layer-shell` surface (which gamescope 3.16.24 crashes on if you
-//! destroy it, and won't re-map once unmapped), gamescope handles these external
-//! overlays coming and going freely. So this backend maps the window only while
-//! dimming/blanking and unmaps it when active — nothing is composited over a
-//! running game. It reconnects on X-server churn (e.g. a game launch spinning up
-//! a new Xwayland), restoring the desired state.
+//! The window is created lazily on the first dim/blank and mapped from then on;
+//! it is never unmapped. gamescope only recomposites an idle scene in response
+//! to a fresh frame on a *mapped* surface, so hiding is done by repainting the
+//! window fully transparent (alpha 0) — unmapping instead would leave the last
+//! black frame stuck on screen with nothing to trigger a recomposite. This
+//! mirrors the layer-shell backend, which also hides by going transparent rather
+//! than tearing anything down. It reconnects on X-server churn (e.g. a game
+//! launch spinning up a new Xwayland), restoring the desired state.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -179,10 +181,15 @@ fn run(
             Ok(Cmd::Show(alpha)) => show(conn, win, screen.root, alpha, &mut mapped)?,
             Ok(Cmd::Hide) => {
                 if mapped {
-                    conn.unmap_window(win)?;
-                    conn.flush()?;
-                    mapped = false;
-                    tracing::debug!("external overlay hidden");
+                    // Hide by repainting fully transparent — do NOT unmap. When
+                    // the scene is idle (exactly when the overlay is up),
+                    // gamescope only recomposites in response to a fresh frame on
+                    // a *mapped* surface. A bare unmap produces no such frame
+                    // (Xwayland tears down the wl_surface), so the last black
+                    // frame stays stuck on screen. Committing a transparent frame
+                    // while mapped forces the recomposite and the black clears.
+                    paint(conn, win, 0.0)?;
+                    tracing::debug!("external overlay hidden (transparent)");
                 }
             }
             Ok(Cmd::Quit) => {
@@ -221,20 +228,27 @@ fn show(
             .height(h as u32),
     )?;
 
+    if !*mapped {
+        conn.map_window(win)?;
+        *mapped = true;
+    }
+    paint(conn, win, alpha)?;
+    tracing::debug!("external overlay shown at alpha={alpha} ({w}x{h})");
+    Ok(())
+}
+
+/// Repaint the window's whole area at the given opacity (premultiplied black, so
+/// the pixel is just the alpha byte). The resulting frame is what makes gamescope
+/// recomposite — used both to show (alpha > 0) and to hide (alpha 0).
+fn paint(conn: &RustConnection, win: Window, alpha: f64) -> Result<()> {
     let a = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
-    // Premultiplied ARGB, RGB = 0 (black) → the pixel is just the alpha byte.
     let pixel = a << 24;
     conn.change_window_attributes(
         win,
         &ChangeWindowAttributesAux::new().background_pixel(pixel),
     )?;
-    if !*mapped {
-        conn.map_window(win)?;
-        *mapped = true;
-    }
     conn.clear_area(false, win, 0, 0, 0, 0)?; // width/height 0 → whole window
     conn.flush()?;
-    tracing::debug!("external overlay shown at alpha={alpha} ({w}x{h})");
     Ok(())
 }
 
