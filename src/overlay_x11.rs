@@ -88,7 +88,8 @@ pub fn spawn() -> Result<X11OverlayHandle> {
 fn overlay_thread(shared: Arc<Shared>) {
     let mut backoff = Duration::from_millis(200);
     while !shared.quit.load(Ordering::SeqCst) {
-        match x11rb::connect(None) {
+        let disp = resolve_display();
+        match x11rb::connect(disp.as_deref()) {
             Ok((conn, screen_num)) => {
                 let (tx, rx) = channel::<Cmd>();
                 *shared.sender.lock().unwrap() = Some(tx);
@@ -101,7 +102,10 @@ fn overlay_thread(shared: Arc<Shared>) {
                     }
                 }
             }
-            Err(e) => tracing::warn!("external overlay cannot reach Xwayland ({e:#}); retrying"),
+            Err(e) => tracing::warn!(
+                "external overlay cannot reach Xwayland (DISPLAY={}, {e:#}); retrying",
+                disp.as_deref().unwrap_or("<unset>")
+            ),
         }
         if shared.quit.load(Ordering::SeqCst) {
             break;
@@ -109,6 +113,32 @@ fn overlay_thread(shared: Arc<Shared>) {
         thread::sleep(backoff);
         backoff = (backoff * 2).min(Duration::from_secs(3));
     }
+}
+
+/// Resolve gamescope's X display, live on every connect attempt.
+///
+/// The systemd unit reads gamescope's environment file *once*, at exec time, but
+/// gamescope may not have written `DISPLAY` into it yet when we start (a start-
+/// ordering race — the session target goes active before the file is fully
+/// populated). When that happens the process inherits no `DISPLAY`, and a plain
+/// `x11rb::connect(None)` can never succeed no matter how often the reconnect
+/// loop retries: the process environment is fixed for its lifetime. So instead
+/// of trusting the exec-time env we re-resolve each attempt — prefer an inherited
+/// `DISPLAY`, else re-read gamescope's environment file, which it fills in during
+/// session startup. This turns "blank only works after a manual restart" into
+/// "blank starts working within a couple of seconds of the session coming up".
+fn resolve_display() -> Option<String> {
+    if let Ok(d) = std::env::var("DISPLAY") {
+        if !d.is_empty() {
+            return Some(d);
+        }
+    }
+    let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    let text = std::fs::read_to_string(format!("{runtime}/gamescope-environment")).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("DISPLAY="))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn run(
