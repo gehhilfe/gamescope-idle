@@ -22,8 +22,8 @@ use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ColormapAlloc, ConfigureWindowAux,
-    ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Screen, VisualClass, Visualid,
-    Window, WindowClass,
+    ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Screen, StackMode, VisualClass,
+    Visualid, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -219,7 +219,16 @@ fn run(
                     // frame stays stuck on screen. Committing a transparent frame
                     // while mapped forces the recomposite and the black clears.
                     paint(conn, win, 0.0)?;
-                    tracing::debug!("external overlay hidden (transparent)");
+                    // Yield the single external-overlay slot back to mangoapp by
+                    // dropping below it, so its HUD reappears. If we stayed on
+                    // top we'd keep winning the slot with a transparent window
+                    // and suppress mangoapp for the whole active session.
+                    conn.configure_window(
+                        win,
+                        &ConfigureWindowAux::new().stack_mode(StackMode::BELOW),
+                    )?;
+                    conn.flush()?;
+                    tracing::debug!("external overlay hidden (transparent), lowered");
                 }
             }
             Ok(Cmd::Quit) => {
@@ -262,8 +271,13 @@ fn show(
         conn.map_window(win)?;
         *mapped = true;
     }
+    // gamescope composites exactly ONE GAMESCOPE_EXTERNAL_OVERLAY window and
+    // selects the top-most one in the stack. mangoapp owns such a window too
+    // (STEAM_USE_MANGOAPP), so we must raise above it to win the slot while
+    // visible — otherwise mangoapp keeps it and our black is never painted.
+    conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
     paint(conn, win, alpha)?;
-    tracing::debug!("external overlay shown at alpha={alpha} ({w}x{h})");
+    tracing::debug!("external overlay shown at alpha={alpha} ({w}x{h}), raised");
     Ok(())
 }
 
