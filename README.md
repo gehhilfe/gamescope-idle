@@ -42,7 +42,8 @@ the TV into real standby.
  gamepad ──┼─▶ evdev ─▶ [ gamescope-idle daemon ] ──┤
  (evdev)   │              state machine             └─▶ CEC standby  (cec-ctl, if present)
            │                    ▲
- logind idle inhibitor ─────────┘  (apps hold one to prevent blanking)
+ logind idle inhibitor ────────┤   (systemd-inhibit / the `inhibit` wrapper)
+ org.freedesktop.ScreenSaver ──┘   (browsers & media apps, held while a video plays)
 ```
 
 ## Behaviour
@@ -113,6 +114,24 @@ Optional; copy [`data/config.example.toml`](data/config.example.toml) to
 | `ignore_devices` | `[]` | extra input event nodes to ignore |
 
 ## Preventing and triggering blanking (for apps)
+
+### Video apps (browsers, media players) — automatic
+
+gamescope-idle owns the session-bus **`org.freedesktop.ScreenSaver`** service and
+honours its `Inhibit`/`UnInhibit` calls. This is the standard "keep the display
+awake" interface that Chromium/Electron and most media players already use, so
+**video apps keep the screen lit while a video is playing with no configuration**
+— the inhibitor is taken when playback starts and dropped when it pauses or ends,
+so the panel still blanks once you stop watching. This covers ordinary browsers as
+well as YouTube-in-gamescope frontends like
+[VacuumTube](https://github.com/shy1132/VacuumTube). In a bare gamescope session
+nothing else provides this name, which is why the video otherwise blanked.
+
+(Sanity-check that your app's wake lock reaches the daemon with
+`journalctl --user -u gamescope-idle -f` at `RUST_LOG=…=debug` — you'll see
+`screensaver Inhibit from "…": "Video Wake Lock"` when a video starts.)
+
+### Anything else — hold an idle inhibitor
 
 **Prevent** blanking while your app runs — hold a logind idle inhibitor. Either
 use the built-in helper:

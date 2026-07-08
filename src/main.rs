@@ -13,6 +13,7 @@ mod inhibit;
 mod input;
 mod overlay;
 mod overlay_x11;
+mod screensaver;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -61,6 +62,13 @@ enum Cmd {
         #[arg(long, default_value_t = 3)]
         seconds: u64,
     },
+    /// Hidden: own org.freedesktop.ScreenSaver and log inhibitors, to check that
+    /// apps' display wake locks reach us (used to validate session support).
+    #[command(hide = true)]
+    ScreensaverTest {
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+    },
 }
 
 #[tokio::main]
@@ -96,6 +104,22 @@ async fn main() -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
             handle.quit();
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(())
+        }
+        Cmd::ScreensaverTest { seconds } => {
+            let watch = screensaver::spawn().await?;
+            tracing::info!(
+                "owning org.freedesktop.ScreenSaver for {seconds}s; call Inhibit to test"
+            );
+            for _ in 0..seconds {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let holders = watch.inhibitors();
+                if holders.is_empty() {
+                    tracing::info!("inhibited=false");
+                } else {
+                    tracing::info!("inhibited=true by {}", holders.join("; "));
+                }
+            }
             Ok(())
         }
     }

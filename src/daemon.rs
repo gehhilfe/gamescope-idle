@@ -23,6 +23,7 @@ use crate::inhibit::InhibitWatch;
 use crate::input;
 use crate::overlay::{self, OverlayControl};
 use crate::overlay_x11;
+use crate::screensaver::{self, ScreenSaverWatch};
 
 /// Far-future sleep used to mean "no timer in this state".
 const IDLE_FOREVER: Duration = Duration::from_secs(3600);
@@ -71,6 +72,17 @@ pub async fn run(cfg: Config) -> Result<()> {
         }
     };
 
+    // Session-bus screensaver inhibit: lets apps that ask the standard
+    // org.freedesktop.ScreenSaver service to keep the display awake (browsers,
+    // media players, Electron video apps) prevent blanking while they play.
+    let screensaver = match screensaver::spawn().await {
+        Ok(w) => Some(w),
+        Err(e) => {
+            tracing::warn!("screensaver inhibit service unavailable: {e:#}");
+            None
+        }
+    };
+
     let cec = Cec::new(&cfg);
 
     // Input activity: evdev (keyboard + in-game controller) and hidraw (controller
@@ -109,7 +121,7 @@ pub async fn run(cfg: Config) -> Result<()> {
 
         tokio::select! {
             _ = act_rx.recv() => m.on_activity().await,
-            _ = timer => m.on_timeout(inhibit.as_ref()).await,
+            _ = timer => m.on_timeout(inhibit.as_ref(), screensaver.as_ref()).await,
             _ = sigusr1.recv() => m.force_blank().await,
             _ = sigusr2.recv() => m.on_activity().await,
             _ = sigterm.recv() => { tracing::info!("SIGTERM"); break; }
@@ -164,20 +176,28 @@ impl Machine {
         self.state = State::Active;
     }
 
-    async fn on_timeout(&mut self, inhibit: Option<&InhibitWatch>) {
+    async fn on_timeout(
+        &mut self,
+        inhibit: Option<&InhibitWatch>,
+        screensaver: Option<&ScreenSaverWatch>,
+    ) {
         match self.state {
             State::Active => {
-                let blocked = match inhibit {
+                let logind_blocked = match inhibit {
                     Some(w) => w.idle_blocked().await,
                     None => false,
                 };
-                if blocked {
+                let screensaver_blocked = screensaver.is_some_and(|w| w.inhibited());
+                if logind_blocked || screensaver_blocked {
                     // Something holds an idle inhibitor; defer a full cycle.
                     if tracing::enabled!(tracing::Level::DEBUG) {
-                        let holders = match inhibit {
+                        let mut holders = match inhibit {
                             Some(w) => w.idle_inhibitors().await,
                             None => Vec::new(),
                         };
+                        if let Some(w) = screensaver {
+                            holders.extend(w.inhibitors());
+                        }
                         if holders.is_empty() {
                             tracing::debug!("idle inhibited; staying awake");
                         } else {

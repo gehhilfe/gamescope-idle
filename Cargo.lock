@@ -426,6 +426,7 @@ dependencies = [
  "clap",
  "directories",
  "evdev",
+ "futures-util",
  "libc",
  "serde",
  "smithay-client-toolkit",
